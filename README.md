@@ -66,7 +66,7 @@ def one_hot_label_read_func(img_path, label_class):
     img_padding
  ```
 ### 他们之间的区别是什么呢？使用data_read_function修饰！</br>
-为使用data_read_function修饰：
+未使用data_read_function修饰：
 - [ ] 传入函数名用以被调用
 - [ ] 无法定义额外参数或者参数无法传入
 - [ ] 一些常量只能写死在函数内非常不便</br>
