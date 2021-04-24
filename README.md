@@ -8,7 +8,7 @@
 numpy 以及 opencv是关于数据读取和处理的部分，你可以自定义自己需要读取方式
 ***
 ## 🔨使用方法
-全部都在[DataReader.py](./DataReader.py)中</br>
+全部都在[DateReader.py](./DateReader.py)中</br>
 
 ### 其最主要的是：</br>
 ```python
