@@ -1,4 +1,4 @@
-from functools import wraps
+from functools import wraps, reduce
 from queue import Queue
 import threading
 import random
@@ -302,14 +302,15 @@ class DataReader(BasicDataReader):
 
         return [path.split() for path in _txt_content]
 
-    def read_data(self, img_path):
+    def read_data(self, img_path_list):
         """
         读取数据方式函数
-        :param img_path:  图像地址
+        :param img_path_list:  图像地址
         :return: ndarray
         """
-        return cv2.imread(img_path)
+        return tuple(map(cv2.imread, img_path_list))
 
+    # @consign.coroutine
     def thread_worker(self, product_queue, consume_queue, function_list, progress):
         """
         线程工作者
@@ -321,16 +322,19 @@ class DataReader(BasicDataReader):
         """
         while True:
             _txt_content = product_queue.get()
-            read_data_tuple = tuple(map(self.read_data, _txt_content))
+
+            read_data_tuple = self.read_data(_txt_content)
 
             for func in function_list:
-                read_data_tuple = tuple(map(func, read_data_tuple))
+                read_data_tuple = func(read_data_tuple)
 
             consume_queue.put(read_data_tuple)
 
             if self.is_show_progress:
                 sys.stdout.flush()
                 sys.stdout.write('\r' + next(progress))
+
+            # yield consign.pass_func
 
     def product_put_worker(self, product_queue):
         """
@@ -366,6 +370,7 @@ class DataReader(BasicDataReader):
         put_worker.setDaemon(True)
 
         for i in range(using_thread_num):
+            # self.thread_worker(product_queue, consume_queue, function_list, progress)
             product_worker = threading.Thread(target=self.thread_worker, args=(product_queue, consume_queue,
                                                                                function_list, progress))
             product_worker.setDaemon(True)
@@ -376,7 +381,7 @@ class DataReader(BasicDataReader):
         while True:
             if consume_queue.full():
                 for i in range(self.read_data_cache):
-                    cache_data.append(consume_queue.get())
+                    cache_data.append(consume_queue.get().values())
 
                 yield tuple(zip(*cache_data))
 
@@ -408,10 +413,8 @@ class DataReader(BasicDataReader):
 
 
 # @data_read_function(DEBUG)  # 是否使用修饰都可以
-def img_padding(image):
-    if not is_image(image):
-        return image
-
+def img_padding(info_dict, key="image"):
+    image = info_dict[key]
     width, high, channel = image.shape if len(image.shape) == 3 else (*image.shape, 1)
 
     dim_diff = np.abs(high - width)
@@ -420,74 +423,58 @@ def img_padding(image):
     pad = (0, 0, pad1, pad2) if high <= width else (pad1, pad2, 0, 0)
     top, bottom, left, right = pad
 
-    img_pad = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, None, 0)
+    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, None, 0)
 
-    return img_pad
+    info_dict[key] = image
 
-
-def is_image(image):
-    return image.shape.__len__() in (2, 3)
+    return info_dict
 
 
-@data_read_function(DEBUG)
-def img_resize(image, resize):
-    if not is_image(image):
-        return image
-
-    image = cv2.resize(image, resize, interpolation=cv2.INTER_AREA)
-
-    return image
+def is_np2d_image(image):
+    return isinstance(image, np.ndarray) and image.shape.__len__() in (2, 3)
 
 
 @data_read_function(DEBUG)
-def gray_img_reshape(image):
-    if not is_image(image):
-        return image
-
-    if len(image.shape) == 2:
-        image = image.reshape((image.shape[0], image.shape[1], 1))
-
-    return image
+def img_resize(info_dict, resize, key="image"):
+    info_dict[key] = cv2.resize(info_dict[key], resize, interpolation=cv2.INTER_AREA)
+    return info_dict
 
 
 @data_read_function(DEBUG)
-def img_BGR2YUV(image):
-    if not is_image(image):
-        return image
+def gray_img_hw_to_hwc(info_dict, key="image"):
+    image = info_dict[key]
+    info_dict[key] = image.reshape((image.shape[0], image.shape[1], 1))
 
-    if not img_check_gray(image):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
-
-    return image
+    return info_dict
 
 
 @data_read_function(DEBUG)
-def img_random_resize_from_dict(image, size_dict):
-    if not is_image(image):
-        return image
+def np_BGR2YUV(info_dict, key="image"):
+    info_dict[key] = cv2.cvtColor(info_dict[key], cv2.COLOR_BGR2YUV)
 
-    assert sum(size_dict.values()) == 1.0, "using_mode_dict的概率相加应当为1"
+    return info_dict
+
+
+@data_read_function(DEBUG)
+def img_random_resize_from_dict(info_dict, size_dict, key="image"):
+
+    # assert sum(size_dict.values()) == 1.0, "using_mode_dict的概率相加应当为1"
 
     p = np.array(list(size_dict.values()))
 
     resize = np.random.choice(list(size_dict.keys()), p=p.ravel())
-    re_img = cv2.resize(image, (resize, resize), interpolation=cv2.INTER_AREA)
+    info_dict[key] = cv2.resize(info_dict[key], (resize, resize), interpolation=cv2.INTER_AREA)
 
-    return re_img
+    return info_dict
 
 
 @data_read_function(DEBUG)
-def img_float_normalization(image, max_float=255.0):
-    if not is_image(image):
-        return image
-
-    return image.astype('float32') / max_float
+def float_normalization(info_dict, max_float=255.0, key="image"):
+    info_dict[key] = info_dict[key].astype('float32') / max_float
+    return info_dict
 
 
 def img_check_gray(image):
-    if not is_image(image):
-        return image
-
     total = image.shape[0] * image.shape[1]
 
     image = image.reshape(-1, 3)
@@ -519,30 +506,31 @@ def one_hot(labels, label_class):
 
 
 @data_read_function(DEBUG)
-def one_hot_label_read_func(img_path, label_class):
-    if '.' in img_path:
-        return cv2.imread(img_path)
+def one_hot_label_read_func(img_path_list, label_class):
+    # return [cv2.imread(img_path) if '.' in img_path else one_hot(img_path, label_class)
+    #         for img_path in img_path_list]
+    return dict(
+        image=cv2.imread(img_path_list[0]),
+        label=one_hot(img_path_list[1], label_class)
+    )
 
-    return one_hot(img_path, label_class)
 
-
-def label_read_func(img_path):
-    if '.' in img_path:
-        return cv2.imread(img_path)
-
-    return int(img_path)
+def label_read_func(img_path_list):
+    return dict(
+        image=cv2.imread(img_path_list[0]),
+        label=int(img_path_list[1])
+    )
 
 
 if __name__ == '__main__':
 
     dr = DataReader(r"test.txt", [
             img_padding,  # img_padding没使用修饰，所以传入函数名，如果使用修饰此处使用img_padding()
-            img_resize((512, 512)),
-            img_BGR2YUV(),
+            img_resize((512, 512), key="image"),
         ],
-        read_data_func=one_hot_label_read_func(3),
-        read_data_cache=20,  # 读取数据的缓冲大小
-        batch_size=10,  # 读取数据得到的批大小 必填
+        read_data_func=one_hot_label_read_func(4),
+        read_data_cache=2,  # 读取数据的缓冲大小
+        batch_size=2,  # 读取数据得到的批大小 必填
         is_completion=True,  # 是否填充
         using_thread_num=5,  # 使用线程数
         is_show_progress=True  # 是否可视化读取进程
@@ -551,6 +539,7 @@ if __name__ == '__main__':
     )
 
     for epoch, image, label in dr:
+
         image = np.array(image).astype("float32") / 255.0
         label = np.array(label)
 
